@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roof-to-Grid — C&I Solar + Storage Feasibility Simulator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #map { height: 460px; z-index: 0; }
+  .kpi { background: #0f2a43; border-radius: 0.75rem; padding: 0.9rem 1rem; }
+  .kpi .v { font-size: 1.5rem; font-weight: 800; line-height: 1.1; }
+  .kpi .l { font-size: 0.72rem; text-transform: uppercase; letter-spacing: .06em; color: #9db8d2; }
+  input[type=number], input[type=text], select { color: #0f172a; }
+  .field label { display:block; font-size:.72rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:#475569; margin-bottom:.2rem; }
+  .field input, .field select { width:100%; border:1px solid #cbd5e1; border-radius:.5rem; padding:.45rem .6rem; font-size:.9rem; background:#fff; }
+  .field input:focus, .field select:focus { outline:2px solid #f59e0b; border-color:#f59e0b; }
+  .preset { border:1px solid #cbd5e1; border-radius:.6rem; padding:.5rem .7rem; font-size:.82rem; font-weight:600; background:#fff; cursor:pointer; }
+  .preset:hover { border-color:#f59e0b; background:#fffbeb; }
+  .preset.active { background:#0f2a43; color:#fff; border-color:#0f2a43; }
+  @media print {
+    body * { visibility: hidden; }
+    #brief, #brief * { visibility: visible; }
+    #brief { position: absolute; left: 0; top: 0; width: 100%; }
+  }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+
+<header class="bg-[#0f2a43] text-white">
+  <div class="max-w-7xl mx-auto px-4 py-5 flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <div class="flex items-center gap-2">
+        <span class="text-2xl">☀️</span>
+        <h1 class="text-2xl font-extrabold tracking-tight">Roof-to-Grid</h1>
+        <span class="text-[11px] font-bold bg-amber-400 text-slate-900 rounded px-2 py-0.5">MVP</span>
+      </div>
+      <p class="text-sky-200 text-sm mt-1">Commercial solar + storage feasibility &amp; tax-stack simulator — draw a roof, see the deal.</p>
+    </div>
+    <div class="text-right text-xs text-sky-200 max-w-sm">
+      Built for commercial EPC and C&amp;I owners. Planning estimates only — verify rates, yields, and tax treatment with the utility and a tax advisor.
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-5 space-y-5">
+
+  <!-- Scenario presets -->
+  <section class="bg-white rounded-xl shadow-sm p-4">
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-xs font-bold uppercase tracking-wide text-slate-500 mr-1">Scenario presets</span>
+      <button class="preset" data-preset="coldstorage">🧊 Cold Storage Warehouse — high demand charge</button>
+      <button class="preset" data-preset="retail">🏬 Big-Box Retail Roof</button>
+      <button class="preset" data-preset="manufacturing">🏭 Manufacturing Facility + BESS</button>
+      <span class="text-xs text-slate-400 ml-auto">Presets set the financial inputs below — the roof polygon stays as drawn.</span>
+    </div>
+  </section>
+
+  <div class="grid lg:grid-cols-5 gap-5">
+    <!-- Map -->
+    <section class="lg:col-span-3 bg-white rounded-xl shadow-sm p-4">
+      <h2 class="font-bold text-lg">1 · Draw the roof</h2>
+      <p class="text-sm text-slate-500 mb-3">Search an address, then trace the usable roof with the polygon tool. A sample Lincoln warehouse roof is pre-drawn — click it to see its area, or clear it and draw your own.</p>
+      <div class="flex gap-2 mb-3">
+        <input id="addrSearch" type="text" class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="e.g. 5600 Cornhusker Hwy, Lincoln, NE">
+        <button id="btnGeocode" class="bg-[#0f2a43] text-white text-sm font-semibold rounded-lg px-4">Find address</button>
+        <button id="btnSample" class="border border-slate-300 text-sm font-semibold rounded-lg px-3">Sample roof</button>
+        <button id="btnClear" class="border border-slate-300 text-sm font-semibold rounded-lg px-3">Clear</button>
+      </div>
+      <div id="map" class="rounded-lg border border-slate-300"></div>
+      <div class="grid grid-cols-3 gap-3 mt-3 text-center">
+        <div class="bg-slate-50 rounded-lg p-2"><div class="text-xs text-slate-500">Roof area drawn</div><div id="roofArea" class="font-bold">—</div></div>
+        <div class="bg-slate-50 rounded-lg p-2"><div class="text-xs text-slate-500">Usable area (<span id="packingLabel">65</span>%)</div><div id="usableArea" class="font-bold">—</div></div>
+        <div class="bg-amber-50 rounded-lg p-2"><div class="text-xs text-slate-500">System size</div><div id="sysKwTop" class="font-bold text-amber-700">—</div></div>
+      </div>
+      <p id="geoStatus" class="text-xs text-slate-400 mt-2">Satellite basemap: Esri World Imagery. Geocoding: OpenStreetMap Nominatim.</p>
+    </section>
+
+    <!-- Inputs -->
+    <section class="lg:col-span-2 bg-white rounded-xl shadow-sm p-4 space-y-4">
+      <h2 class="font-bold text-lg">2 · The deal inputs</h2>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="field"><label>Utility / tariff</label>
+          <select id="utilitySelect"></select>
+        </div>
+        <div class="field"><label>Blended energy rate ($/kWh)</label>
+          <input id="energyRate" type="number" step="0.001" value="0.028">
+        </div>
+        <div class="field"><label>Demand charge ($/kW-mo)</label>
+          <input id="demandCharge" type="number" step="0.1" value="14.50">
+        </div>
+        <div class="field"><label>Peak demand (kW)</label>
+          <input id="peakKw" type="number" step="10" value="900">
+        </div>
+        <div class="field"><label>Annual usage (kWh/yr)</label>
+          <input id="annualKwh" type="number" step="10000" value="2400000">
+        </div>
+        <div class="field"><label>Specific yield (kWh/kW-yr)</label>
+          <input id="yieldInput" type="number" step="10" value="1380">
+        </div>
+      </div>
+      <p id="tariffNote" class="text-xs text-slate-400"></p>
+
+      <div class="border-t pt-3 space-y-3">
+        <div class="grid grid-cols-3 gap-3">
+          <div class="field"><label>Packing factor %</label><input id="packingFactor" type="number" min="30" max="90" value="65"></div>
+          <div class="field"><label>Watts / sq ft</label><input id="wattsPerSqFt" type="number" step="1" value="18"></div>
+          <div class="field"><label>EPC cost ($/W)</label><input id="epcCost" type="number" step="0.05" value="1.85"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="flex items-center gap-2 text-sm"><input id="itcEnergy" type="checkbox" class="accent-amber-500"> +10% Energy Community adder</label>
+          <label class="flex items-center gap-2 text-sm"><input id="itcDomestic" type="checkbox" class="accent-amber-500"> +10% Domestic Content adder</label>
+        </div>
+        <p class="text-xs text-slate-500">Federal ITC base is <strong>30%</strong>. Adders stack to a 50% cap.</p>
+        <div class="grid grid-cols-3 gap-3">
+          <div class="field"><label>Corp. tax rate %</label><input id="taxRate" type="number" step="1" value="21"></div>
+          <div class="field"><label>Discount rate %</label><input id="discountRate" type="number" step="0.5" value="6"></div>
+          <div class="field"><label>Rate escalator %/yr</label><input id="escalator" type="number" step="0.5" value="2.5"></div>
+        </div>
+        <label class="flex items-center gap-2 text-sm"><input id="macrsOn" type="checkbox" checked class="accent-amber-500"> 5-year MACRS depreciation (basis reduced by half the ITC)</label>
+      </div>
+
+      <div class="border-t pt-3 space-y-3">
+        <label class="flex items-center gap-2 text-sm font-semibold"><input id="bessOn" type="checkbox" checked class="accent-amber-500"> Add battery storage (BESS) — demand-charge shaving</label>
+        <div class="grid grid-cols-3 gap-3" id="bessFields">
+          <div class="field"><label>BESS size (kWh)</label><input id="bessKwh" type="number" step="50" value="800"></div>
+          <div class="field"><label>BESS cost ($/kWh)</label><input id="bessCost" type="number" step="10" value="350"></div>
+          <div class="field"><label>Peak shaved %</label><input id="shavePct" type="number" step="5" value="30"></div>
+        </div>
+      </div>
+
+      <div class="border-t pt-3">
+        <div class="field"><label>NREL PVWatts API key (optional — uses live PVWatts v8; leave blank for built-in yield model)</label>
+          <input id="pvKey" type="text" placeholder="Get a free key at developer.nrel.gov" autocomplete="off">
+        </div>
+        <p id="pvStatus" class="text-xs text-slate-400 mt-1">Using built-in regional yield model.</p>
+      </div>
+
+      <button id="btnCalc" class="w-full bg-amber-400 hover:bg-amber-300 text-slate-900 font-extrabold rounded-lg py-3 text-base">▶ Run feasibility</button>
+    </section>
+  </div>
+
+  <!-- Results -->
+  <section class="bg-white rounded-xl shadow-sm p-4">
+    <h2 class="font-bold text-lg mb-3">3 · The answer</h2>
+    <div id="noResult" class="text-sm text-slate-500">Draw or keep the sample roof, then hit <strong>Run feasibility</strong>.</div>
+    <div id="results" class="hidden">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="kpi text-white"><div class="l">System size</div><div class="v" id="rSysKw">—</div><div class="text-xs text-sky-200" id="rProd">—</div></div>
+        <div class="kpi text-white"><div class="l">Net CapEx (after ITC + MACRS PV)</div><div class="v" id="rNetCapex">—</div><div class="text-xs text-sky-200" id="rGross">—</div></div>
+        <div class="kpi text-white"><div class="l">Simple payback</div><div class="v" id="rPayback">—</div><div class="text-xs text-sky-200" id="rYear1">—</div></div>
+        <div class="kpi text-white"><div class="l">25-yr NPV / IRR</div><div class="v" id="rNpv">—</div><div class="text-xs text-sky-200" id="rIrr">—</div></div>
+      </div>
+      <div class="grid md:grid-cols-2 gap-4 mt-4">
+        <div><h3 class="font-semibold text-sm mb-2">25-year cumulative cash flow</h3><canvas id="cfChart" height="220"></canvas></div>
+        <div><h3 class="font-semibold text-sm mb-2">Capital stack — where the money comes from</h3><canvas id="stackChart" height="220"></canvas></div>
+      </div>
+      <div class="grid md:grid-cols-3 gap-3 mt-4 text-sm">
+        <div class="bg-slate-50 rounded-lg p-3"><strong>Year-1 value</strong><div id="rYear1Detail" class="text-slate-600 mt-1">—</div></div>
+        <div class="bg-slate-50 rounded-lg p-3"><strong>Annual bill savings (yr 1)</strong><div id="rSavings" class="text-slate-600 mt-1">—</div></div>
+        <div class="bg-slate-50 rounded-lg p-3"><strong>CO₂ offset</strong><div id="rCo2" class="text-slate-600 mt-1">—</div></div>
+      </div>
+      <div class="flex flex-wrap gap-2 mt-4">
+        <button id="btnBrief" class="bg-[#0f2a43] text-white text-sm font-semibold rounded-lg px-4 py-2">🖨 Print executive brief (PDF)</button>
+        <button id="btnCsv" class="border border-slate-300 text-sm font-semibold rounded-lg px-4 py-2">⬇ Download 25-yr cash flow (CSV)</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Executive brief (print target) -->
+  <section id="brief" class="bg-white rounded-xl shadow-sm p-6 hidden">
+    <h2 class="text-xl font-extrabold">Executive Feasibility Brief — Commercial Solar + Storage</h2>
+    <p class="text-sm text-slate-500" id="briefMeta">Roof-to-Grid simulator · planning estimates only</p>
+    <table class="w-full text-sm mt-4 border-collapse">
+      <tbody id="briefRows"></tbody>
+    </table>
+    <h3 class="font-bold mt-5 mb-1">Assumptions</h3>
+    <ul id="briefAssumptions" class="text-sm text-slate-600 list-disc pl-5 space-y-1"></ul>
+    <p class="text-xs text-slate-400 mt-5">Independent concept tool. Not affiliated with MARS Energy Group, Nelnet, or any utility. Rates, yields, and tax treatment are planning estimates — verify with the serving utility and a tax advisor before committing capital. ITC and MACRS treatment reflects the Inflation Reduction Act as generally applied to commercial solar; project-specific eligibility (prevailing wage, apprenticeship, domestic content, energy community) must be confirmed.</p>
+  </section>
+
+  <footer class="text-center text-xs text-slate-400 pb-6">
+    Roof-to-Grid · C&amp;I Solar + Storage Feasibility Simulator · Static site — no data leaves the browser except map tiles, geocoding, and (optionally) PVWatts.
+  </footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt$ = n => '$' + Math.round(n).toLocaleString('en-US');
+const fmtNum = (n, d=0) => n.toLocaleString('en-US', {maximumFractionDigits: d, minimumFractionDigits: d});
+const MACRS = [0.20, 0.32, 0.192, 0.1152, 0.1152, 0.0576];
+
+let TARIFFS = null, UTIL = null;
+let map, drawnItems, drawControl, currentPolygon = null, cfChart = null, stackChart = null, lastResult = null, pvYield = null;
+
+// ---------- data ----------
+async function loadTariffs() {
+  const res = await fetch('data/tariffs.json');
+  const data = await res.json();
+  TARIFFS = data;
+  const sel = $('utilitySelect');
+  data.utilities.forEach(u => {
+    const o = document.createElement('option');
+    o.value = u.id; o.textContent = `${u.name} — ${u.territory}`;
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', applyUtility);
+  applyUtility();
+}
+function applyUtility() {
+  UTIL = TARIFFS.utilities.find(u => u.id === $('utilitySelect').value);
+  $('energyRate').value = UTIL.energyRate;
+  $('demandCharge').value = UTIL.demandCharge;
+  $('yieldInput').value = UTIL.specificYieldKwhPerKw;
+  pvYield = null; $('pvStatus').textContent = 'Using built-in regional yield model.';
+  $('tariffNote').textContent = (UTIL.verified ? '✓ 2026 published tariff. ' : 'Planning estimate — verify against the current tariff book. ')
+    + UTIL.energyRateNote + ' ' + UTIL.demandChargeNote;
+}
+
+// ---------- map ----------
+function initMap() {
+  map = L.map('map').setView([40.8595, -96.6400], 17);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri', maxZoom: 19
+  }).addTo(map);
+  drawnItems = new L.FeatureGroup();
+  map.addLayer(drawnItems);
+  drawControl = new L.Control.Draw({
+    edit: { featureGroup: drawnItems },
+    draw: { polygon: { allowIntersection: false, showArea: true }, marker: false, circle: false, rectangle: false, polyline: false, circlemarker: false }
+  });
+  map.addControl(drawControl);
+  map.on(L.Draw.Event.CREATED, e => { drawnItems.clearLayers(); drawnItems.addLayer(e.layer); currentPolygon = e.layer; updateRoof(); });
+  map.on(L.Draw.Event.EDITED, () => { currentPolygon = drawnItems.getLayers()[0] || null; updateRoof(); });
+  map.on(L.Draw.Event.DELETED, () => { currentPolygon = null; updateRoof(); });
+  $('btnClear').onclick = () => { drawnItems.clearLayers(); currentPolygon = null; updateRoof(); };
+  $('btnSample').onclick = () => drawSampleRoof();
+  $('btnGeocode').onclick = geocode;
+  $('addrSearch').addEventListener('keydown', e => { if (e.key === 'Enter') geocode(); });
+  drawSampleRoof();
+}
+function drawSampleRoof() {
+  // Illustrative ~120,000 sq ft warehouse roof, North Lincoln industrial area
+  const coords = [[40.85902,-96.64062],[40.85902,-96.63938],[40.85998,-96.63938],[40.85998,-96.64062]];
+  drawnItems.clearLayers();
+  const poly = L.polygon(coords, { color: '#f59e0b', weight: 3, fillOpacity: 0.25 });
+  drawnItems.addLayer(poly);
+  currentPolygon = poly;
+  map.flyTo([40.8595, -96.6400], 17);
+  updateRoof();
+}
+async function geocode() {
+  const q = $('addrSearch').value.trim();
+  if (!q) return;
+  $('geoStatus').textContent = 'Geocoding…';
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } });
+    const j = await r.json();
+    if (j.length) {
+      map.flyTo([+j[0].lat, +j[0].lon], 18);
+      $('geoStatus').textContent = 'Found: ' + j[0].display_name + ' — now trace the roof with the polygon tool.';
+    } else $('geoStatus').textContent = 'Address not found — try a full street address with city and state.';
+  } catch (e) { $('geoStatus').textContent = 'Geocoding failed (network) — you can still pan the map and draw.'; }
+}
+function updateRoof() {
+  if (!currentPolygon) { $('roofArea').textContent = '—'; $('usableArea').textContent = '—'; $('sysKwTop').textContent = '—'; return; }
+  const gj = currentPolygon.toGeoJSON();
+  const areaM2 = turf.area(gj);
+  const areaSqFt = areaM2 * 10.7639;
+  const packing = +$('packingFactor').value / 100;
+  const usable = areaSqFt * packing;
+  const kw = usable * (+$('wattsPerSqFt').value) / 1000;
+  $('roofArea').textContent = fmtNum(areaSqFt) + ' sq ft';
+  $('usableArea').textContent = fmtNum(usable) + ' sq ft';
+  $('sysKwTop').textContent = fmtNum(kw, 1) + ' kW DC';
+  $('packingLabel').textContent = $('packingFactor').value;
+}
+
+// ---------- financial engine ----------
+function inputs() {
+  return {
+    energyRate: +$('energyRate').value, demandCharge: +$('demandCharge').value,
+    peakKw: +$('peakKw').value, annualUsage: +$('annualKwh').value,
+    yieldKwh: pvYield || +$('yieldInput').value,
+    packing: +$('packingFactor').value / 100, wpsf: +$('wattsPerSqFt').value,
+    epc: +$('epcCost').value, taxRate: +$('taxRate').value / 100,
+    disc: +$('discountRate').value / 100, esc: +$('escalator').value / 100,
+    macrs: $('macrsOn').checked,
+    itcRate: Math.min(0.50, 0.30 + ($('itcEnergy').checked ? 0.10 : 0) + ($('itcDomestic').checked ? 0.10 : 0)),
+    bess: $('bessOn').checked, bessKwh: +$('bessKwh').value, bessCost: +$('bessCost').value,
+    shave: +$('shavePct').value / 100
+  };
+}
+function npvAt(rate, cfs) { return cfs.reduce((s, cf, t) => s + cf / Math.pow(1 + rate, t), 0); }
+function irr(cfs) {
+  let lo = -0.9, hi = 2.0;
+  if (npvAt(lo, cfs) * npvAt(hi, cfs) > 0) return null;
+  for (let i = 0; i < 100; i++) { const mid = (lo + hi) / 2; if (npvAt(mid, cfs) > 0) lo = mid; else hi = mid; }
+  return (lo + hi) / 2;
+}
+async function maybeFetchPVWatts(kwDc, lat, lon) {
+  const key = $('pvKey').value.trim();
+  if (!key || !kwDc) return;
+  $('pvStatus').textContent = 'Querying NREL PVWatts…';
+  try {
+    const url = `https://developer.nrel.gov/api/pvwatts/v8.json?api_key=${encodeURIComponent(key)}&lat=${lat}&lon=${lon}&system_capacity=${kwDc.toFixed(1)}&azimuth=180&tilt=10&array_type=1&module_type=0&losses=14.18`;
+    const r = await fetch(url);
+    const j = await r.json();
+    if (j.outputs && j.outputs.ac_annual) {
+      pvYield = j.outputs.ac_annual / kwDc;
+      $('yieldInput').value = Math.round(pvYield);
+      $('pvStatus').textContent = `PVWatts v8 live: ${fmtNum(j.outputs.ac_annual)} kWh/yr (${Math.round(pvYield)} kWh/kW-yr).`;
+    } else $('pvStatus').textContent = 'PVWatts returned no data — using built-in yield model.';
+  } catch (e) { $('pvStatus').textContent = 'PVWatts call failed — using built-in yield model.'; }
+}
+async function runCalc() {
+  if (!currentPolygon) { alert('Draw a roof polygon first (or use the sample roof).'); return; }
+  updateRoof();
+  const inp = inputs();
+  const gj = currentPolygon.toGeoJSON();
+  const areaSqFt = turf.area(gj) * 10.7639;
+  const usable = areaSqFt * inp.packing;
+  const kwDc = usable * inp.wpsf / 1000;
+  const center = currentPolygon.getBounds().getCenter();
+  await maybeFetchPVWatts(kwDc, center.lat.toFixed(4), center.lng.toFixed(4));
+  const y = pvYield || +$('yieldInput').value;
+  const prod = kwDc * y;
+  const grossSolar = kwDc * 1000 * inp.epc;
+  const grossBess = inp.bess ? inp.bessKwh * inp.bessCost : 0;
+  const gross = grossSolar + grossBess;
+  const itc = gross * inp.itcRate;
+  const basis = gross - 0.5 * itc;
+  const shields = inp.macrs ? MACRS.map(r => basis * r * inp.taxRate) : [0,0,0,0,0,0];
+  const pvMacrs = shields.reduce((s, sh, i) => s + sh / Math.pow(1 + inp.disc, i + 1), 0);
+  const net = gross - itc - pvMacrs;
+  const energy0 = Math.min(prod, inp.annualUsage) * inp.energyRate + Math.max(0, prod - inp.annualUsage) * 0.03;
+  const demand0 = inp.bess ? inp.peakKw * inp.shave * inp.demandCharge * 12 : 0;
+  const om0 = kwDc * 12;
+  const cfs = [-gross], cum = [-gross], years = [];
+  for (let t = 1; t <= 25; t++) {
+    const deg = Math.pow(1 - 0.005, t - 1), escF = Math.pow(1 + inp.esc, t - 1);
+    const cf = energy0 * deg * escF + demand0 * escF - om0 * escF
+      + (t <= 6 ? shields[t - 1] : 0) + (t === 1 ? itc : 0);
+    cfs.push(cf); cum.push(cum[t - 1] + cf);
+    years.push({ year: t, energy: energy0 * deg * escF, demand: demand0 * escF, om: om0 * escF, macrs: t <= 6 ? shields[t - 1] : 0, itc: t === 1 ? itc : 0, cf, cum: cum[t] });
+  }
+  let payback = null;
+  for (let t = 1; t <= 25; t++) {
+    if (cum[t] >= 0) { const prev = cum[t - 1]; payback = (t - 1) + (0 - prev) / (cum[t] - prev); break; }
+  }
+  const npv = npvAt(inp.disc, cfs);
+  const r = irr(cfs);
+  const co2Annual = prod * 0.0004, co2Total = co2Annual * 25;
+  lastResult = { inp, kwDc, prod, gross, grossSolar, grossBess, itc, pvMacrs, net, energy0, demand0, om0, cfs, cum, years, payback, npv, irr: r, co2Annual, co2Total, areaSqFt, usable, yieldUsed: y };
+  renderResults();
+}
+function renderResults() {
+  const x = lastResult, inp = x.inp;
+  $('noResult').classList.add('hidden'); $('results').classList.remove('hidden');
+  $('rSysKw').textContent = fmtNum(x.kwDc, 1) + ' kW DC';
+  $('rProd').textContent = fmtNum(x.prod) + ' kWh/yr · ' + fmtNum(x.yieldUsed) + ' kWh/kW-yr';
+  $('rNetCapex').textContent = fmt$(x.net);
+  $('rGross').textContent = 'Gross ' + fmt$(x.gross) + ' · ITC −' + fmt$(x.itc) + ' · MACRS PV −' + fmt$(x.pvMacrs);
+  $('rPayback').textContent = x.payback ? x.payback.toFixed(1) + ' yrs' : '>25 yrs';
+  $('rYear1').textContent = 'Year-1 cash flow ' + fmt$(x.cfs[1]);
+  $('rNpv').textContent = fmt$(x.npv);
+  $('rIrr').textContent = x.irr !== null ? 'IRR ' + (x.irr * 100).toFixed(1) + '% · 25-yr horizon' : 'IRR n/a';
+  $('rYear1Detail').innerHTML = `Bill savings ${fmt$(x.energy0 + x.demand0 - x.om0)} + ITC ${fmt$(x.itc)} + MACRS shield ${fmt$(x.years[0].macrs)} = <strong>${fmt$(x.cfs[1])}</strong>`;
+  $('rSavings').innerHTML = `Energy ${fmt$(x.energy0)}/yr + demand shaving ${fmt$(x.demand0)}/yr − O&amp;M ${fmt$(x.om0)}/yr = <strong>${fmt$(x.energy0 + x.demand0 - x.om0)}/yr</strong>`;
+  $('rCo2').innerHTML = `<strong>${fmtNum(x.co2Annual, 1)} metric tons/yr</strong> · ${fmtNum(x.co2Total)} tons over 25 yrs (≈ ${fmtNum(x.co2Annual / 4.6, 0)} cars off the road/yr)`;
+  // charts
+  const labels = ['Now', ...x.years.map(y => 'Yr ' + y.year)];
+  if (cfChart) cfChart.destroy();
+  cfChart = new Chart($('cfChart'), { type: 'line', data: { labels, datasets: [{ label: 'Cumulative cash flow', data: x.cum, borderColor: '#0f2a43', backgroundColor: 'rgba(245,158,11,.25)', fill: true, tension: 0.25, pointRadius: 0 }] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => '$' + (v / 1000) + 'k' } } } } });
+  if (stackChart) stackChart.destroy();
+  stackChart = new Chart($('stackChart'), { type: 'bar', data: { labels: ['Gross CapEx', 'ITC credit', 'MACRS tax shield (PV)', 'Net CapEx'], datasets: [{ data: [x.gross, -x.itc, -x.pvMacrs, x.net], backgroundColor: ['#0f2a43', '#16a34a', '#2563eb', '#f59e0b'] }] }, options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { ticks: { callback: v => '$' + (v / 1000) + 'k' } } } } });
+  buildBrief();
+  $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function buildBrief() {
+  const x = lastResult, inp = x.inp;
+  $('brief').classList.remove('hidden');
+  $('briefMeta').textContent = `Roof-to-Grid simulator · ${UTIL.name} · ${new Date().toLocaleDateString('en-US')} · Planning estimates only`;
+  const rows = [
+    ['System size', fmtNum(x.kwDc, 1) + ' kW DC (' + fmtNum(x.usable) + ' usable sq ft of ' + fmtNum(x.areaSqFt) + ' drawn)'],
+    ['Annual production', fmtNum(x.prod) + ' kWh/yr (' + fmtNum(x.yieldUsed) + ' kWh/kW-yr)'],
+    ['Gross CapEx', fmt$(x.gross) + (x.grossBess ? ` (solar ${fmt$(x.grossSolar)} + BESS ${fmt$(x.grossBess)})` : '')],
+    ['Federal ITC (' + Math.round(inp.itcRate * 100) + '%)', '−' + fmt$(x.itc)],
+    ['MACRS tax shield (PV @ ' + Math.round(inp.disc * 100) + '%)', '−' + fmt$(x.pvMacrs)],
+    ['Net CapEx', fmt$(x.net)],
+    ['Annual bill savings (yr 1)', fmt$(x.energy0 + x.demand0 - x.om0) + ' (energy ' + fmt$(x.energy0) + ' + demand ' + fmt$(x.demand0) + ' − O&M ' + fmt$(x.om0) + ')'],
+    ['Year-1 cash flow', fmt$(x.cfs[1])],
+    ['Simple payback', x.payback ? x.payback.toFixed(1) + ' years' : 'Beyond 25 years'],
+    ['25-year NPV @ ' + Math.round(inp.disc * 100) + '%', fmt$(x.npv)],
+    ['25-year IRR', x.irr !== null ? (x.irr * 100).toFixed(1) + '%' : 'n/a'],
+    ['CO₂ offset', fmtNum(x.co2Annual, 1) + ' metric tons/yr · ' + fmtNum(x.co2Total) + ' tons over 25 yrs']
+  ];
+  $('briefRows').innerHTML = rows.map(([k, v]) => `<tr class="border-b"><td class="py-2 pr-4 font-semibold w-56">${k}</td><td class="py-2">${v}</td></tr>`).join('');
+  $('briefAssumptions').innerHTML = [
+    `Utility: ${UTIL.name} — energy $${inp.energyRate}/kWh, demand $${inp.demandCharge}/kW-mo.`,
+    `Production: ${fmtNum(x.yieldUsed)} kWh/kW-yr${pvYield ? ' (NREL PVWatts v8)' : ' (built-in regional model)'}; 0.5%/yr degradation; rates escalate ${Math.round(inp.esc * 100 * 10) / 10}%/yr.`,
+    `ITC ${Math.round(inp.itcRate * 100)}% (30% base${$('itcEnergy').checked ? ' + 10% energy community' : ''}${$('itcDomestic').checked ? ' + 10% domestic content' : ''}); MACRS ${inp.macrs ? '5-year, ' + Math.round(inp.taxRate * 100) + '% tax rate, basis reduced by half the ITC' : 'not applied'}.`,
+    `BESS: ${inp.bess ? fmtNum(inp.bessKwh) + ' kWh at $' + inp.bessCost + '/kWh, shaving ' + Math.round(inp.shave * 100) + '% of ' + fmtNum(inp.peakKw) + ' kW peak demand' : 'not included'}.`,
+    `EPC $${inp.epc}/W · ${inp.wpsf} W/sq ft · ${Math.round(inp.packing * 100)}% packing factor · O&M $12/kW-yr · export valued at $0.03/kWh.`
+  ].map(s => `<li>${s}</li>`).join('');
+}
+
+// ---------- presets ----------
+const PRESETS = {
+  coldstorage: { utility: 'les', peakKw: 900, annualKwh: 2400000, bessOn: true, bessKwh: 800, bessCost: 350, shavePct: 30, itcEnergy: false, itcDomestic: false },
+  retail: { utility: 'oppd', peakKw: 400, annualKwh: 1200000, bessOn: false, bessKwh: 500, bessCost: 350, shavePct: 25, itcEnergy: false, itcDomestic: false },
+  manufacturing: { utility: 'comed', peakKw: 1200, annualKwh: 3600000, bessOn: true, bessKwh: 1200, bessCost: 350, shavePct: 25, itcEnergy: true, itcDomestic: false }
+};
+document.querySelectorAll('.preset').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.preset').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  const p = PRESETS[b.dataset.preset];
+  $('utilitySelect').value = p.utility; applyUtility();
+  $('peakKw').value = p.peakKw; $('annualKwh').value = p.annualKwh;
+  $('bessOn').checked = p.bessOn; $('bessKwh').value = p.bessKwh; $('bessCost').value = p.bessCost; $('shavePct').value = p.shavePct;
+  $('itcEnergy').checked = p.itcEnergy; $('itcDomestic').checked = p.itcDomestic;
+  $('bessFields').style.opacity = p.bessOn ? 1 : 0.4;
+  runCalc();
+}));
+
+// ---------- export ----------
+$('btnBrief').onclick = () => window.print();
+$('btnCsv').onclick = () => {
+  if (!lastResult) return;
+  const head = 'Year,Energy savings,Demand savings,O&M,MACRS shield,ITC,Net cash flow,Cumulative\n';
+  const body = lastResult.years.map(y => [y.year, y.energy.toFixed(0), y.demand.toFixed(0), (-y.om).toFixed(0), y.macrs.toFixed(0), y.itc.toFixed(0), y.cf.toFixed(0), y.cum.toFixed(0)].join(',')).join('\n');
+  const blob = new Blob(['0,,,,,,' + (-lastResult.gross).toFixed(0) + ',' + (-lastResult.gross).toFixed(0) + '\n' + head + body], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'roof-to-grid-cashflow.csv'; a.click();
+};
+$('btnCalc').onclick = runCalc;
+$('bessOn').addEventListener('change', e => { $('bessFields').style.opacity = e.target.checked ? 1 : 0.4; });
+['packingFactor','wattsPerSqFt'].forEach(id => $(id).addEventListener('input', updateRoof));
+
+// ---------- boot ----------
+loadTariffs().then(() => { initMap(); updateRoof(); });
+</script>
+</body>
+</html>
