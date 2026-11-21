@@ -11,7 +11,7 @@ Built as a concept tool to run adjacent to the commercial solar EPC ecosystem (G
 - **Border-state comparison:** after any run, section 4 re-runs the same roof and inputs under each border-state utility and charts 25-year NPV and simple payback side by side, with a full table (energy rate, demand charge, yield, annual savings, net CapEx, payback, NPV). Nebraska (LES) is the home baseline.
 - **Tax-stack engine (client-side, `index.html`):** 30% federal ITC with toggleable +10% Energy Community and +10% Domestic Content adders (50% cap), 5-year MACRS with the depreciable basis reduced by half the ITC, configurable corporate tax rate.
 - **BESS demand-charge shaving:** toggleable battery size/cost and peak-shave fraction, modeled against the site's peak demand and demand charge.
-- **Executive outputs:** net CapEx, Year-1 cash flow, simple payback, 25-year NPV and IRR, CO₂ offset, 25-year cumulative cash-flow chart, capital-stack chart, print-to-PDF "Executive Feasibility Brief," and a CSV cash-flow download.
+- **Executive outputs:** net CapEx, Year-1 cash flow, simple payback, 25-year NPV and IRR, CO₂ offset, 25-year cumulative cash-flow chart, capital-stack chart, print-to-PDF "Executive Feasibility Brief," and a CSV cash-flow download. Every run also writes a plain-English **Key summary** (verdict + what is driving the result, no jargon) at the top of the results and inside the printed brief.
 - **Scenario presets:** Cold Storage Warehouse (high demand charge), Big-Box Retail Roof, Manufacturing Facility + BESS.
 - **Optional live production data:** enter a free NREL PVWatts API key (developer.nrel.gov) and the app pulls real PVWatts v8 production for the roof's location; otherwise it uses a built-in regional yield model.
 

@@ -158,6 +158,10 @@
         <div class="kpi text-white"><div class="l">Simple payback</div><div class="v" id="rPayback">—</div><div class="text-xs text-sky-200" id="rYear1">—</div></div>
         <div class="kpi text-white"><div class="l">25-yr NPV / IRR</div><div class="v" id="rNpv">—</div><div class="text-xs text-sky-200" id="rIrr">—</div></div>
       </div>
+      <div class="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+        <h3 class="font-bold text-sm mb-1">🔑 Key summary — in plain English</h3>
+        <div id="rSummary" class="text-sm text-slate-700 space-y-1">—</div>
+      </div>
       <div class="grid md:grid-cols-2 gap-4 mt-4">
         <div><h3 class="font-semibold text-sm mb-2">25-year cumulative cash flow</h3><canvas id="cfChart" height="220"></canvas></div>
         <div><h3 class="font-semibold text-sm mb-2">Capital stack — where the money comes from</h3><canvas id="stackChart" height="220"></canvas></div>
@@ -196,6 +200,8 @@
     <table class="w-full text-sm mt-4 border-collapse">
       <tbody id="briefRows"></tbody>
     </table>
+    <h3 class="font-bold mt-5 mb-1">Key summary</h3>
+    <div id="briefSummary" class="text-sm text-slate-600 space-y-1"></div>
     <h3 class="font-bold mt-5 mb-1">Assumptions</h3>
     <ul id="briefAssumptions" class="text-sm text-slate-600 list-disc pl-5 space-y-1"></ul>
     <p class="text-xs text-slate-400 mt-5">Independent concept tool. Not affiliated with MARS Energy Group, Nelnet, or any utility. Rates, yields, and tax treatment are planning estimates — verify with the serving utility and a tax advisor before committing capital. ITC and MACRS treatment reflects the Inflation Reduction Act as generally applied to commercial solar; project-specific eligibility (prevailing wage, apprenticeship, domestic content, energy community) must be confirmed.</p>
@@ -395,6 +401,7 @@ function renderResults() {
   $('rYear1Detail').innerHTML = `Bill savings ${fmt$(x.energy0 + x.demand0 - x.om0)} + ITC ${fmt$(x.itc)} + MACRS shield ${fmt$(x.years[0].macrs)} = <strong>${fmt$(x.cfs[1])}</strong>`;
   $('rSavings').innerHTML = `Energy ${fmt$(x.energy0)}/yr + demand shaving ${fmt$(x.demand0)}/yr − O&amp;M ${fmt$(x.om0)}/yr = <strong>${fmt$(x.energy0 + x.demand0 - x.om0)}/yr</strong>`;
   $('rCo2').innerHTML = `<strong>${fmtNum(x.co2Annual, 1)} metric tons/yr</strong> · ${fmtNum(x.co2Total)} tons over 25 yrs (≈ ${fmtNum(x.co2Annual / 4.6, 0)} cars off the road/yr)`;
+  $('rSummary').innerHTML = buildSummary(x);
   // charts
   const labels = ['Now', ...x.years.map(y => 'Yr ' + y.year)];
   if (cfChart) cfChart.destroy();
@@ -464,6 +471,40 @@ function buildComparison() {
 $('cmpNpv').onclick = () => { cmpMetric = 'npv'; $('cmpNpv').classList.add('active'); $('cmpPayback').classList.remove('active'); if (lastResult) drawCmpChart(compareRows()); };
 $('cmpPayback').onclick = () => { cmpMetric = 'payback'; $('cmpPayback').classList.add('active'); $('cmpNpv').classList.remove('active'); if (lastResult) drawCmpChart(compareRows()); };
 
+// ---------- plain-English key summary ----------
+function buildSummary(x) {
+  const inp = x.inp, lines = [];
+  const yrsFree = x.payback ? Math.max(0, 25 - x.payback) : 0;
+  // Verdict: is this a good deal, in plain terms?
+  if (x.npv > 0 && x.irr !== null && x.irr > inp.disc + 0.02 && x.payback && x.payback <= 10) {
+    lines.push(`<strong>This one works well.</strong> It pays for itself in ${x.payback.toFixed(1)} years, and over 25 years it comes out ${fmt$(x.npv)} ahead — and that figure already accounts for the fact that money today is worth more than money years from now.`);
+  } else if (x.npv > 0) {
+    lines.push(`<strong>This one works, but slowly.</strong> It pays for itself in ${x.payback ? x.payback.toFixed(1) + ' years' : 'more than 25 years'}, and over 25 years it comes out ${fmt$(x.npv)} ahead in today's dollars — a modest win, not a big one.`);
+  } else {
+    lines.push(`<strong>On money alone, this one doesn't pay off.</strong> Over 25 years it comes out ${fmt$(Math.abs(x.npv))} behind in today's dollars${x.payback ? `, even though the yearly savings eventually cover the cost after ${x.payback.toFixed(1)} years` : ' — the savings never cover the cost within the panels’ 25-year life'}. It would need another reason to do it, like a donor, cheaper power bills elsewhere, or the mission value of the panels themselves.`);
+  }
+  // Why: what is actually driving the result?
+  if (x.cfs[1] > 0 && x.itc / x.cfs[1] > 0.5) {
+    lines.push(`Most of the first-year money — ${fmt$(x.itc)} of ${fmt$(x.cfs[1])} — is a one-time tax credit, not savings from the panels. The project leans heavily on that credit arriving.`);
+  }
+  if (x.demand0 > x.energy0) {
+    lines.push(`The battery is doing the heavy lifting: cutting peak demand saves ${fmt$(x.demand0)} a year, more than the ${fmt$(x.energy0)} a year the panels earn by making power.`);
+  } else if (inp.energyRate < 0.05) {
+    lines.push(`Power here is cheap ($${inp.energyRate.toFixed(3)} per kWh), so each unit of electricity the panels make is worth little — that is the main reason the numbers are tight.`);
+  }
+  if (x.prod > inp.annualUsage * 1.10) {
+    lines.push(`The system makes ${fmtNum(x.prod - inp.annualUsage)} kWh a year more than the building uses. That extra power is sold back to the grid at 3¢ per kWh, which earns very little — a smaller system, sized to what the building actually uses, would look better.`);
+  }
+  if (inp.bess && x.grossBess > 0 && x.demand0 > 0) {
+    const bessPayback = x.grossBess / x.demand0;
+    if (bessPayback > 15) lines.push(`The battery alone would take about ${bessPayback.toFixed(0)} years to pay for itself from demand savings — it adds cost faster than it adds value here.`);
+    else if (bessPayback <= 8) lines.push(`The battery earns its keep: it pays for itself in about ${bessPayback.toFixed(0)} years from demand savings alone.`);
+  }
+  if (x.payback && x.payback <= 25) {
+    lines.push(`After it pays for itself, there are about ${yrsFree.toFixed(0)} years of nearly free power left in the panels' 25-year life.`);
+  }
+  return lines.map(l => `<p>${l}</p>`).join('');
+}
 function buildBrief() {
   const x = lastResult, inp = x.inp;
   $('brief').classList.remove('hidden');
@@ -483,6 +524,7 @@ function buildBrief() {
     ['CO₂ offset', fmtNum(x.co2Annual, 1) + ' metric tons/yr · ' + fmtNum(x.co2Total) + ' tons over 25 yrs']
   ];
   $('briefRows').innerHTML = rows.map(([k, v]) => `<tr class="border-b"><td class="py-2 pr-4 font-semibold w-56">${k}</td><td class="py-2">${v}</td></tr>`).join('');
+  $('briefSummary').innerHTML = buildSummary(x);
   $('briefAssumptions').innerHTML = [
     `Utility: ${UTIL.name} — energy $${inp.energyRate}/kWh, demand $${inp.demandCharge}/kW-mo.`,
     `Production: ${fmtNum(x.yieldUsed)} kWh/kW-yr${pvYield ? ' (NREL PVWatts v8)' : ' (built-in regional model)'}; 0.5%/yr degradation; rates escalate ${Math.round(inp.esc * 100 * 10) / 10}%/yr.`,
