@@ -174,6 +174,21 @@
     </div>
   </section>
 
+  <!-- Border-state comparison -->
+  <section id="compareSection" class="bg-white rounded-xl shadow-sm p-4 hidden">
+    <h2 class="font-bold text-lg">4 · Same roof, every border state</h2>
+    <p class="text-sm text-slate-500 mb-3">The roof and inputs above, re-run under each utility serving a state bordering Nebraska. Nebraska (LES) is the home baseline. Battery demand-shaving is worth more where demand charges are high — and sunnier states produce more from the same roof.</p>
+    <div class="flex gap-2 mb-3">
+      <button id="cmpNpv" class="preset active">25-yr NPV</button>
+      <button id="cmpPayback" class="preset">Simple payback</button>
+    </div>
+    <div class="max-w-3xl"><canvas id="cmpChart" height="220"></canvas></div>
+    <div class="overflow-x-auto mt-4">
+      <table class="w-full text-sm border-collapse" id="cmpTable"></table>
+    </div>
+    <p class="text-xs text-slate-400 mt-2">Planning estimates only — the border-state tariffs are blended planning values, not quoted rates. Export is valued at $0.03/kWh in every state; states with retail net metering would value exports higher. State incentives are not modeled. Payback beyond the 25-year horizon is shown as 25.</p>
+  </section>
+
   <!-- Executive brief (print target) -->
   <section id="brief" class="bg-white rounded-xl shadow-sm p-6 hidden">
     <h2 class="text-xl font-extrabold">Executive Feasibility Brief — Commercial Solar + Storage</h2>
@@ -197,7 +212,7 @@ const fmtNum = (n, d=0) => n.toLocaleString('en-US', {maximumFractionDigits: d, 
 const MACRS = [0.20, 0.32, 0.192, 0.1152, 0.1152, 0.0576];
 
 let TARIFFS = null, UTIL = null;
-let map, drawnItems, drawControl, currentPolygon = null, cfChart = null, stackChart = null, lastResult = null, pvYield = null;
+let map, drawnItems, drawControl, currentPolygon = null, cfChart = null, stackChart = null, cmpChart = null, cmpMetric = 'npv', lastResult = null, pvYield = null;
 
 // ---------- data ----------
 async function loadTariffs() {
@@ -319,18 +334,10 @@ async function maybeFetchPVWatts(kwDc, lat, lon) {
     } else $('pvStatus').textContent = 'PVWatts returned no data — using built-in yield model.';
   } catch (e) { $('pvStatus').textContent = 'PVWatts call failed — using built-in yield model.'; }
 }
-async function runCalc() {
-  if (!currentPolygon) { alert('Draw a roof polygon first (or use the sample roof).'); return; }
-  updateRoof();
-  const inp = inputs();
-  const gj = currentPolygon.toGeoJSON();
-  const areaSqFt = turf.area(gj) * 10.7639;
-  const usable = areaSqFt * inp.packing;
-  const kwDc = usable * inp.wpsf / 1000;
-  const center = currentPolygon.getBounds().getCenter();
-  await maybeFetchPVWatts(kwDc, center.lat.toFixed(4), center.lng.toFixed(4));
-  const y = pvYield || +$('yieldInput').value;
-  const prod = kwDc * y;
+// Pure financial engine: same roof (kwDc) and inputs, one utility's rates/yield.
+// Used by the main run and by the border-state comparison.
+function calcDeal(inp, kwDc, yieldKwh) {
+  const prod = kwDc * yieldKwh;
   const grossSolar = kwDc * 1000 * inp.epc;
   const grossBess = inp.bess ? inp.bessKwh * inp.bessCost : 0;
   const gross = grossSolar + grossBess;
@@ -357,7 +364,21 @@ async function runCalc() {
   const npv = npvAt(inp.disc, cfs);
   const r = irr(cfs);
   const co2Annual = prod * 0.0004, co2Total = co2Annual * 25;
-  lastResult = { inp, kwDc, prod, gross, grossSolar, grossBess, itc, pvMacrs, net, energy0, demand0, om0, cfs, cum, years, payback, npv, irr: r, co2Annual, co2Total, areaSqFt, usable, yieldUsed: y };
+  return { kwDc, prod, gross, grossSolar, grossBess, itc, pvMacrs, net, energy0, demand0, om0, cfs, cum, years, payback, npv, irr: r, co2Annual, co2Total };
+}
+async function runCalc() {
+  if (!currentPolygon) { alert('Draw a roof polygon first (or use the sample roof).'); return; }
+  updateRoof();
+  const inp = inputs();
+  const gj = currentPolygon.toGeoJSON();
+  const areaSqFt = turf.area(gj) * 10.7639;
+  const usable = areaSqFt * inp.packing;
+  const kwDc = usable * inp.wpsf / 1000;
+  const center = currentPolygon.getBounds().getCenter();
+  await maybeFetchPVWatts(kwDc, center.lat.toFixed(4), center.lng.toFixed(4));
+  const y = pvYield || +$('yieldInput').value;
+  const deal = calcDeal(inp, kwDc, y);
+  lastResult = { inp, areaSqFt, usable, yieldUsed: y, ...deal };
   renderResults();
 }
 function renderResults() {
@@ -381,8 +402,68 @@ function renderResults() {
   if (stackChart) stackChart.destroy();
   stackChart = new Chart($('stackChart'), { type: 'bar', data: { labels: ['Gross CapEx', 'ITC credit', 'MACRS tax shield (PV)', 'Net CapEx'], datasets: [{ data: [x.gross, -x.itc, -x.pvMacrs, x.net], backgroundColor: ['#0f2a43', '#16a34a', '#2563eb', '#f59e0b'] }] }, options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { ticks: { callback: v => '$' + (v / 1000) + 'k' } } } } });
   buildBrief();
+  buildComparison();
   $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+// ---------- border-state comparison ----------
+const COMPARE_IDS = ['les', 'xcel-co', 'xcel-sd', 'midamerican', 'ameren-mo', 'evergy', 'rmp-wy'];
+const COMPARE_LABELS = { les: 'NE · LES', 'xcel-co': 'CO · Xcel', 'xcel-sd': 'SD · Xcel', midamerican: 'IA · MidAmerican', 'ameren-mo': 'MO · Ameren', evergy: 'KS · Evergy', 'rmp-wy': 'WY · RMP' };
+function compareRows() {
+  const inp = lastResult.inp, kwDc = lastResult.kwDc;
+  return COMPARE_IDS.map(id => {
+    const u = TARIFFS.utilities.find(x => x.id === id);
+    const ii = Object.assign({}, inp, { energyRate: u.energyRate, demandCharge: u.demandCharge });
+    const d = calcDeal(ii, kwDc, u.specificYieldKwhPerKw);
+    return { id, label: COMPARE_LABELS[id], name: u.name, territory: u.territory, energyRate: u.energyRate, demandCharge: u.demandCharge, yield: u.specificYieldKwhPerKw, savings1: d.energy0 + d.demand0 - d.om0, ...d };
+  });
+}
+function drawCmpChart(rows) {
+  const labels = rows.map(r => r.label);
+  const isNpv = cmpMetric === 'npv';
+  const data = rows.map(r => isNpv ? Math.round(r.npv) : (r.payback ? +r.payback.toFixed(1) : 25));
+  const colors = isNpv
+    ? rows.map(r => r.npv >= 0 ? '#16a34a' : '#dc2626')
+    : rows.map(r => r.payback ? '#0f2a43' : '#94a3b8');
+  if (cmpChart) cmpChart.destroy();
+  cmpChart = new Chart($('cmpChart'), {
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: colors }] },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => isNpv ? ' NPV ' + fmt$(c.parsed.y) : (rows[c.dataIndex].payback ? ' Payback ' + rows[c.dataIndex].payback.toFixed(1) + ' yrs' : ' Payback beyond 25 yrs') } }
+      },
+      scales: {
+        y: { title: { display: true, text: isNpv ? '25-year NPV ($)' : 'Simple payback (years)' }, ticks: { callback: v => isNpv ? '$' + (v / 1000) + 'k' : v } }
+      }
+    }
+  });
+}
+function buildComparison() {
+  if (!lastResult || !TARIFFS) return;
+  const rows = compareRows();
+  drawCmpChart(rows);
+  const best = rows.reduce((a, b) => (b.npv > a.npv ? b : a), rows[0]);
+  $('cmpTable').innerHTML =
+    '<thead><tr class="border-b text-left text-slate-500">' +
+    ['State · Utility', 'Energy', 'Demand', 'Yield', 'Annual savings', 'Net CapEx', 'Payback', '25-yr NPV'].map(h => '<th class="py-2 pr-3 font-semibold">' + h + '</th>').join('') +
+    '</tr></thead><tbody>' +
+    rows.map(r => '<tr class="border-b' + (r === best ? ' bg-green-50 font-semibold' : '') + '">' +
+      '<td class="py-2 pr-3">' + r.label + ' — ' + r.name + (r === best ? ' ★ best NPV' : '') + '<div class="text-xs text-slate-400 font-normal">' + r.territory + '</div></td>' +
+      '<td class="py-2 pr-3">$' + r.energyRate.toFixed(3) + '/kWh</td>' +
+      '<td class="py-2 pr-3">$' + r.demandCharge.toFixed(2) + '/kW-mo</td>' +
+      '<td class="py-2 pr-3">' + fmtNum(r.yield) + '</td>' +
+      '<td class="py-2 pr-3">' + fmt$(r.savings1) + '/yr</td>' +
+      '<td class="py-2 pr-3">' + fmt$(r.net) + '</td>' +
+      '<td class="py-2 pr-3">' + (r.payback ? r.payback.toFixed(1) + ' yrs' : '>25 yrs') + '</td>' +
+      '<td class="py-2 pr-3">' + fmt$(r.npv) + '</td></tr>').join('') +
+    '</tbody>';
+  $('compareSection').classList.remove('hidden');
+}
+$('cmpNpv').onclick = () => { cmpMetric = 'npv'; $('cmpNpv').classList.add('active'); $('cmpPayback').classList.remove('active'); if (lastResult) drawCmpChart(compareRows()); };
+$('cmpPayback').onclick = () => { cmpMetric = 'payback'; $('cmpPayback').classList.add('active'); $('cmpNpv').classList.remove('active'); if (lastResult) drawCmpChart(compareRows()); };
+
 function buildBrief() {
   const x = lastResult, inp = x.inp;
   $('brief').classList.remove('hidden');
